@@ -467,6 +467,7 @@ function renderRecBooks() {
   });
   renderRecDaily();
   renderRecResults();
+  const recAiBtn = $('#recAi'); if (recAiBtn) recAiBtn.addEventListener('click', genAiBooks);
 }
 function recDailyHtml() {
   const seed = dateSeed(todayStr());
@@ -474,8 +475,10 @@ function recDailyHtml() {
   const idxs = [seed % n, (seed + 5) % n, (seed + 11) % n];
   const books = [...new Set(idxs)].map((i) => BOOK_DB[i]).filter(Boolean);
   return `<div class="rec-daily">
-    <div class="rs-head"><h3>📅 今日推荐 <span class="muted" style="font-size:12px;font-weight:400">· ${fmtDate(new Date())} 每日更新</span></h3></div>
+    <div class="rs-head"><h3>📅 今日推荐 <span class="muted" style="font-size:12px;font-weight:400">· ${fmtDate(new Date())} 每日更新</span></h3>
+      <button class="btn-ghost rec-ai" id="recAi" title="AI 根据你的方向荐书">✨ AI 荐书</button></div>
     <div class="rec-grid" id="recDaily">${books.map(recCard).join('')}</div>
+    <div class="rec-ai-box" id="recAiBox" style="display:none"></div>
   </div>`;
 }
 function renderRecDaily() { const box = $('#recDaily'); if (box) bindRecCards(box); }
@@ -711,6 +714,65 @@ async function callAIVision(prompt, imageDataUrl) {
   } catch (e) { return null; }
 }
 
+/* ===================== AI 助手（悬浮入口 + 对话） ===================== */
+function initAIChat() {
+  if (document.getElementById('aiFab')) return;
+  const fab = document.createElement('button');
+  fab.id = 'aiFab'; fab.className = 'ai-fab'; fab.innerHTML = '🤖';
+  fab.title = 'AI 助手';
+  fab.addEventListener('click', openAIChat);
+  document.body.appendChild(fab);
+}
+let aiChatHist = [];
+function openAIChat() {
+  if (document.getElementById('aiChatOv')) return;
+  const cfg = loadAICfg();
+  const ov = document.createElement('div');
+  ov.id = 'aiChatOv'; ov.className = 'ai-chat-ov';
+  ov.innerHTML = `<div class="ai-chat">
+    <div class="ai-chat-h">🤖 AI 助手 <span class="muted" style="font-weight:400;font-size:12px">${cfg && cfg.key ? '已连接' : '未配置 Key'}</span>
+      <button class="ai-chat-x" id="aiChatClose">✕</button></div>
+    <div class="ai-chat-body" id="aiChatBody"></div>
+    <div class="ai-chat-quick" id="aiChatQuick">
+      <button data-q="帮我把这段话润色得更口语化、更有网感：">润色文案</button>
+      <button data-q="用三句话总结上面的今日热点，并给我一个可发的选题角度">总结热点</button>
+      <button data-q="给我 3 个今天可以拍的短视频/图文选题，方向：手作治愈、女性成长、副业变现">选题灵感</button>
+      <button data-q="把这句话翻译成英文，自然口语化：">中英翻译</button>
+    </div>
+    <div class="ai-chat-input">
+      <textarea id="aiChatInput" placeholder="问 AI 任何事：写文案、翻译、总结、规划…（Enter 发送，Shift+Enter 换行）" rows="2"></textarea>
+      <button class="btn-primary" id="aiChatSend">发送</button>
+    </div>
+    <div class="ai-chat-foot"><button class="btn-ghost" id="aiChatCfg">⚙️ AI 设置</button></div>
+  </div>`;
+  document.body.appendChild(ov);
+  const body = $('#aiChatBody');
+  const render = () => {
+    body.innerHTML = aiChatHist.length ? aiChatHist.map((m) => `<div class="ai-msg ${m.role}">${m.role === 'user' ? '🙋' : '🤖'}<div>${escapeHtml(m.content).replace(/\n/g, '<br>')}</div></div>`).join('') : '<div class="ai-think">嗨～我是你的 AI 助手，可以帮你写文案、翻译、总结、找选题。试试下面的快捷按钮，或直接输入。</div>';
+    body.scrollTop = body.scrollHeight;
+  };
+  render();
+  const send = async () => {
+    const ta = $('#aiChatInput'); const text = ta.value.trim(); if (!text) return;
+    if (!loadAICfg().key) { alert('请先配置 AI Key：学习复盘 → ⚙️ AI 分析设置'); return; }
+    aiChatHist.push({ role: 'user', content: text }); ta.value = ''; render();
+    const thinking = document.createElement('div'); thinking.className = 'ai-msg assistant'; thinking.innerHTML = '🤖<div class="ai-think">思考中…</div>'; body.appendChild(thinking); body.scrollTop = body.scrollHeight;
+    try {
+      const sys = { role: 'system', content: '你是「Mickey 工作台」里的全能 AI 助手。用户是一位做裁缝定制/手作/生活内容创作的女生，关心女性成长、副业变现、穿搭审美、英语学习和效率。回答要口语化、有温度、可操作，以中文为主。' };
+      const msgs = [sys].concat(aiChatHist.filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => ({ role: m.role, content: m.content })));
+      const r = await callAI(msgs);
+      aiChatHist.push({ role: 'assistant', content: r });
+      thinking.remove(); render();
+    } catch (e) { thinking.remove(); aiChatHist.push({ role: 'assistant', content: '（出错了：' + e.message + '）' }); render(); }
+  };
+  $('#aiChatSend').addEventListener('click', send);
+  $('#aiChatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+  $('#aiChatClose').addEventListener('click', () => ov.remove());
+  ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
+  $('#aiChatCfg').addEventListener('click', () => { ov.remove(); openAICfg(); });
+  $('#aiChatQuick').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => { const ta = $('#aiChatInput'); ta.value = b.dataset.q; ta.focus(); }));
+}
+
 /* ===================== 3. 选题每日灵感（含抖音/小红书入口） ===================== */
 function initInspiration() {
   const input = $('#ideaInput');
@@ -805,6 +867,22 @@ async function genAiTopics() {
     if (list.length) { save('ai_topics_' + todayStr(), list); renderHotTopics(true); }
   } catch (e) { alert('AI 生成失败：' + e.message); }
   finally { if (btn) { btn.disabled = false; btn.textContent = '✨ 智能生成'; } }
+}
+async function genAiBooks() {
+  const cfg = loadAICfg();
+  if (!cfg.key) { alert('还没配置 AI Key。请到「学习复盘 → ⚙️ AI 分析设置」填写 DeepSeek Key 后即可用 AI 荐书。'); return; }
+  const box = $('#recAiBox'); if (!box) return;
+  box.style.display = '';
+  box.innerHTML = '<div class="ai-think">🤖 AI 正在为你挑书…</div>';
+  try {
+    const r = await callAI([
+      { role: 'system', content: '你是私人阅读顾问，面向一位做裁缝定制/手作/生活分享、关注女性成长与副业变现的创作者。' },
+      { role: 'user', content: '请推荐今天值得读的 3 本书（虚构或非虚构皆可），贴合「女性成长、手作治愈、副业变现、穿搭审美、AI 工具」方向。\n每行格式：书名 | 一句话推荐理由。只输出内容，不要序号外的多余说明。' },
+    ]);
+    const list = r.split('\n').map((x) => x.trim()).filter(Boolean).map((line) => { const p = line.split('|'); return { title: (p[0] || '').replace(/^[\d\.、\-\s]+/, '').trim(), why: (p[1] || '').trim() }; }).filter((b) => b.title);
+    if (!list.length) { box.innerHTML = '<div class="ai-think">AI 没有返回有效书目，换种问法再试～</div>'; return; }
+    box.innerHTML = '<div class="ai-digest"><div class="ai-digest-h">🤖 AI 今日荐书</div>' + list.map((b) => `<div class="rec-ai-item"><b>${escapeHtml(b.title)}</b><span>${escapeHtml(b.why)}</span></div>`).join('') + '</div>';
+  } catch (e) { box.innerHTML = '<div class="ai-think">AI 荐书失败：' + escapeHtml(e.message) + '</div>'; }
 }
 function renderInspiration() {
   const list = load('ideas', []); const box = $('#ideaList'); box.innerHTML = '';
@@ -1879,17 +1957,47 @@ function dateSeed(str) { let h = 2166136261; for (let i = 0; i < String(str).len
 function dailyRot(n) { return dateSeed(todayStr()) % (n || 1); }
 // 实时热榜数据源：多源容错，浏览器可直接跨域请求
 const NEWS_SOURCES = [
-  { key: 'zhihu', label: '知乎', icon: '💡' },
-  { key: 'douyin', label: '抖音', icon: '🎵' },
-  { key: 'weibo', label: '微博', icon: '🔥' },
-  { key: 'finance', label: '财经', icon: '📈' },
+  { key: 'zhihu', label: '知乎', icon: '💡', viki: 'zhihu' },
+  { key: 'douyin', label: '抖音', icon: '🎵', viki: 'douyin' },
+  { key: 'weibo', label: '微博', icon: '🔥', viki: 'weibo' },
+  { key: 'finance', label: '财经', icon: '📈', viki: 'toutiao' },
 ];
-// 实时热榜策略：优先用「自托管后端」（用户在新闻卡片⚙里填的 Cloudflare Worker 地址，服务端抓取真实数据、带 CORS）；
-// 未配置后端时，前端多源直连 + 多级 CORS 代理兜底（聚合源集体抽风时才会回退「精选」）。
+// 实时热榜策略：
+// ① 可选「自托管后端」（用户在新闻卡片⚙里填的 Cloudflare Worker，服务端抓取真实数据、带 CORS）；
+// ② 未配置后端时，主源用 60s-api（开源、CORS 开放、实时热榜）的多个公共实例（含大陆可达镜像）按顺序兜底；
+// ③ 仍失败才回退到旧多源 / 精选。
 const NEWS_BACKEND = () => load('news_api', '').trim();
 const PROXY = 'https://api.allorigins.win/raw?url=';
 const PROXY2 = 'https://api.codetabs.com/v1/proxy/?quest=';
 function proxyUrl(u, p) { return (p || PROXY) + encodeURIComponent(u); }
+// 60s-api 公共实例：前两个是大陆可达镜像（优先），末尾为官方主域作保底。均开放 CORS。
+const VIKI_MIRRORS = [
+  'https://60s.crystelf.top/v2',
+  'https://60s.zellon.top/v2',
+  'https://60s-api.viki.moe/v2',
+];
+async function fetchViki(tab) {
+  const ep = (NEWS_SOURCES.find((s) => s.key === tab) || {}).viki;
+  if (!ep) return [];
+  for (const base of VIKI_MIRRORS) {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 9000);
+    try {
+      const r = await fetch(base + '/' + ep, { signal: ctrl.signal });
+      clearTimeout(to);
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (!j || j.code !== 200 || !Array.isArray(j.data) || !j.data.length) continue;
+      const items = j.data.slice(0, 40).map((it) => {
+        let url = it.link || it.url || '';
+        if (!url && tab === 'zhihu') url = 'https://www.zhihu.com/search?type=content&q=' + encodeURIComponent(it.title || '');
+        return { title: String(it.title || '').trim(), hot: Number(it.hot_value || it.hot || 0), url };
+      }).filter((x) => x.title);
+      if (items.length) return items;
+    } catch (e) { try { clearTimeout(to); } catch (_) {} }
+  }
+  return [];
+}
 const NEWS_PROVIDERS = {
   zhihu: [
     { url: 'https://api-hot.imsyy.top/zhihu' },
@@ -1984,14 +2092,20 @@ async function getHotNews(tab, force) {
       if (r.ok) { const j = await r.json(); const items = extractNews(j); if (items.length) { const fa = Date.now(); save(ck, { items, live: true, ts: fa, fetchedAt: fa, src: '后端' }); return { items, live: true, fetchedAt: fa, src: '后端' }; } }
     } catch (e) { /* 后端不可用，转前端兜底 */ }
   }
-  // 2) 前端多源直连 + 多级代理兜底
-  const specs = NEWS_PROVIDERS[tab] || [];
-  let items = [], src = '';
-  for (const sp of specs) { const r = await fetchOneNews(sp); if (r.length) { items = r; src = sp.name || '热榜'; break; } }
-  const live = items.length > 0;
+  // 2) 主源：60s-api 公共实例（CORS 开放、实时，无需后端）
+  let items = await fetchViki(tab);
+  let src = '实时热榜';
+  let live = items.length > 0;
+  // 3) 兜底：旧多源直连 + 多级代理
+  if (!live) {
+    const specs = NEWS_PROVIDERS[tab] || [];
+    for (const sp of specs) { const r = await fetchOneNews(sp); if (r.length) { items = r; src = sp.name || '热榜'; live = true; break; } }
+  }
+  // 4) 末级：精选（仅在全部实时源不可达时）
   if (!live) {
     const fbAll = HOT_NEWS.slice();
     items = tab === 'finance' ? fbAll.filter((x) => /经济|财经|金融|股票|黄金|比特|基金/.test(x.cat)) : fbAll;
+    src = '精选';
   }
   const fa = Date.now();
   save(ck, { items, live, ts: fa, fetchedAt: fa, src });
@@ -2026,7 +2140,26 @@ async function renderNewsList(force) {
       <span class="news-go">›</span>
     </a>`).join('');
 }
-function nextUpdateLabel() {
+async function genAiNews() {
+  const cfg = loadAICfg();
+  if (!cfg.key) { alert('需要先配置 AI Key 才能用 AI 解读。请到「学习复盘 → ⚙️ AI 分析设置」填写 DeepSeek Key（很便宜，几块钱能用很久）。'); return; }
+  const tab = homeState.newsTab || 'zhihu';
+  const src = NEWS_SOURCES.find((s) => s.key === tab) || {};
+  const cached = load(hotNewsCacheKey(tab), null);
+  const items = (cached && cached.items) || [];
+  if (!items.length) { alert('先点一下「🔄 刷新」拿到实时热榜，再让 AI 解读～'); return; }
+  const box = $('#newsAiBox'); if (!box) return;
+  box.style.display = '';
+  box.innerHTML = '<div class="ai-think">🤖 AI 正在解读今日' + escapeHtml(src.label || '') + '热点…</div>';
+  const top = items.slice(0, 10).map((x, i) => (i + 1) + '. ' + x.title).join('\n');
+  try {
+    const r = await callAI([
+      { role: 'system', content: '你是时事解读助手，擅长把热榜变成普通人能懂、有温度的洞察，不啰嗦。' },
+      { role: 'user', content: '以下是今天「' + (src.label || '热榜') + '」热榜前 10 条：\n' + top + '\n\n请输出：\n① 一句话概括今天大家最关心什么；\n② 挑 2 条最值得关注的，各用 1 句话说明「为什么热 / 和普通人有什么关系」；\n③ 给内容创作者 1 个可蹭的选题角度。\n口语化、有温度，不超过 220 字。' },
+    ]);
+    box.innerHTML = '<div class="ai-digest"><div class="ai-digest-h">🤖 AI 今日热点解读（' + escapeHtml(src.label || '') + '）</div>' + escapeHtml(r).replace(/\n/g, '<br>') + '</div>';
+  } catch (e) { box.innerHTML = '<div class="ai-think">AI 解读失败：' + escapeHtml(e.message) + '</div>'; }
+}function nextUpdateLabel() {
   const t = nextDailyAt(9);
   return (t.getMonth() + 1) + '/' + t.getDate() + ' 09:00';
 }
@@ -2081,6 +2214,7 @@ async function renderHome() {
       <div class="news-head">
         <h3>📰 今日热点</h3>
         <span class="news-badge curated" id="newsBadge">精选</span>
+        <button class="btn-ghost news-ai" id="newsAi" title="AI 解读今日热点">✨ AI</button>
         <button class="btn-ghost news-gear" id="newsGear" title="配置实时热榜后端">⚙</button>
         <button class="btn-ghost news-refresh" id="newsRefresh">🔄 刷新</button>
       </div>
@@ -2088,6 +2222,7 @@ async function renderHome() {
         ${NEWS_SOURCES.map((s) => `<button class="news-tab${s.key === homeState.newsTab ? ' active' : ''}" data-tab="${s.key}">${s.icon} ${s.label}</button>`).join('')}
       </div>
       <div class="news-list" id="newsList"></div>
+      <div class="news-ai-box" id="newsAiBox" style="display:none"></div>
       <div class="news-sub muted" id="newsSub">实时热榜数据 · 点击标题查看原文</div>
     </div>
 
@@ -2108,6 +2243,7 @@ async function renderHome() {
     homeState.newsOffset[homeState.newsTab] = 0;
     renderNewsList(true);
   });
+  const aiNewsBtn = $('#newsAi'); if (aiNewsBtn) aiNewsBtn.addEventListener('click', genAiNews);
   const gear = $('#newsGear'); if (gear) gear.addEventListener('click', () => {
     const cur = NEWS_BACKEND();
     const v = prompt('配置实时热榜后端地址（Cloudflare Worker 等，返回带 CORS 的 JSON）。\n留空则用前端多源兜底。\n当前：' + (cur || '（未配置）'), cur);
@@ -2495,6 +2631,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initEnglish();
   initMood();
   initHome();
+  initAIChat();
   $('#topDate').textContent = todayStr();
   if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
   // 跨标签页实时同步：同一浏览器多开标签时，一处数据变化，其他标签自动刷新当前板块
