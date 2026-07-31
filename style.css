@@ -706,3 +706,10 @@ tr:last-child td{border-bottom:none}
 .ai-chat-input .btn-primary{padding:9px 16px;border-radius:12px}
 .ai-chat-foot{padding:0 14px 12px}
 .ai-chat-foot .btn-ghost{font-size:12px;padding:6px 12px}
+/* —— 运动计划：周几选择 + 新建折叠 —— */
+.wd-row{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 2px}
+.wd-chip{border:1px solid var(--line);background:#fff;border-radius:99px;padding:6px 13px;font-size:13px;cursor:pointer;color:var(--ink);user-select:none}
+.wd-chip.on{background:linear-gradient(135deg,#9CC8F8,#5B9BE8);color:#fff;border-color:transparent;font-weight:600}
+.plan-new{margin-top:10px;border:1px dashed var(--line);border-radius:14px;padding:6px 14px;background:var(--soft)}
+.plan-new summary{cursor:pointer;font-weight:600;padding:8px 0;color:var(--accent)}
+.plan-new[open] summary{margin-bottom:8px}

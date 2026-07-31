@@ -1628,9 +1628,18 @@ function ledgerDonut(catArr) {
 
 /* ===================== 6. 运动（原健康升级） ===================== */
 const SPORT_TABS = [
-  { v: 'checkin', t: '今日打卡' }, { v: 'plan', t: '运动计划' },
-  { v: 'progress', t: '进度统计' }, { v: 'review', t: '阶段复盘' }, { v: 'meal', t: '饮食卡路里' },
+  { v: 'plan', t: '运动计划' }, { v: 'meal', t: '饮食卡路里' },
 ];
+const WD = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+function migratePlan(p) { if (p.days && p.days.length) return p; p.days = (p.cycle === '日') ? [0, 1, 2, 3, 4, 5, 6] : [1, 3, 5]; return p; }
+function planAppliesToday(p, wd) { if (!p) return false; const d = p.days || []; if (!d.length) return true; return d.includes(wd); }
+function ensureTodayItems() {
+  const day = todayStr(); const wd = new Date().getDay(); const rec = sportRec(day); const items = rec.items || [];
+  if (load('sport_cleared_' + day, false)) { rec.items = items; save('sport_' + day, rec); return; }
+  const plans = (load('sport_plans', []) || []).map(migratePlan); let changed = false;
+  plans.forEach((p) => { if (planAppliesToday(p, wd) && !items.some((it) => it.planId === p.id)) { p.items.forEach((it) => items.push({ name: it.name, minutes: it.minutes || 30, kcal: (it.minutes || 30) * 7, done: false, planId: p.id })); changed = true; } });
+  rec.items = items; save('sport_' + day, rec);
+}
 const EX_VIDEO = {
   '跑步': 'https://search.bilibili.com/all?keyword=' + encodeURIComponent('跑步正确姿势教学'),
   '瑜伽': 'https://search.bilibili.com/all?keyword=' + encodeURIComponent('瑜伽入门教程'),
@@ -1649,7 +1658,7 @@ const SPORT_TPL = {
   '户外有氧': ['跑步', '骑行', '游泳'],
   '舒展放松': ['瑜伽', '拉伸', '舞蹈'],
 };
-const sportState = { tab: 'checkin' };
+const sportState = { tab: 'plan' };
 function sportRec(d) { return load('sport_' + (d || todayStr()), { items: [], meals: { 早: [], 午: [], 晚: [], 加: [] }, weight: '' }); }
 function sportBurn(rec) { return (rec.items || []).filter((i) => i.done).reduce((s, i) => s + Number(i.kcal || 0), 0); }
 function sportIntake(rec) { const m = rec.meals || {}; return Object.values(m).flat().reduce((s, f) => s + Number(f.cals || 0), 0); }
@@ -1678,74 +1687,164 @@ async function estimateMealCals(foodText, imageDataUrl) {
   return estimateMealCalsOffline(foodText);
 }
 function initSports() { renderSports(); }
-/* 把某个计划套用到「今天」的训练打卡（同日同计划去重，避免重复添加） */
-function applyPlanToToday(plan) {
-  if (!plan || !plan.items || !plan.items.length) return;
-  const day = todayStr();
-  const rec = sportRec(day);
-  const items = rec.items || [];
-  if (items.some((it) => it.planId === plan.id)) return;
-  plan.items.forEach((it) => items.push({ name: it.name, minutes: it.minutes || 30, kcal: (it.minutes || 30) * 7, done: false, planId: plan.id }));
-  rec.items = items; save('sport_' + day, rec);
-  save('sport_applied_' + day, plan.id);
-}
 function renderSports() {
   $('#sportTabs').innerHTML = SPORT_TABS.map((t) => `<button class="subtab${t.v === sportState.tab ? ' active' : ''}" data-view="${t.v}">${t.t}</button>`).join('');
   $('#sportTabs').querySelectorAll('.subtab').forEach((b) => b.addEventListener('click', () => { sportState.tab = b.dataset.view; renderSports(); }));
   const body = $('#sportBody');
-  ({ checkin: renderSportCheckin, plan: renderSportPlan, progress: renderSportProgress, review: renderSportReview, meal: renderSportMeal })[sportState.tab](body);
+  ({ plan: renderSportPlan, meal: renderSportMeal })[sportState.tab](body);
 }
-function renderSportCheckin(body) {
+/* (运动打卡 / 一键套用 已合并进 renderSportPlan) */
+/* 合并页：运动计划 = 今日打卡(按计划固定周几自动生成) + 计划管理(固定周几/时长/新增运动) + 进度统计 */
+function renderSportPlan(body) {
+  ensureTodayItems();                 // 按计划「固定周几」自动把今天的训练项生成到打卡
   const day = todayStr();
+  const wd = new Date().getDay();
   const rec = sportRec(day);
-  const plans = load('sport_plans', []);
+  const items = rec.items || [];
+  const plans = (load('sport_plans', []) || []).map(migratePlan);
   const goal = load('sport_goal', { prefTime: '晚上', note: '' });
   const burned = sportBurn(rec);
-  const items = rec.items || [];
-  /* 自动生成：当天尚无训练项、且当天未被手动清空过时，自动套用最新计划（真正的「创建计划后自动生成」） */
-  if (!items.length && !load('sport_cleared_' + day, false)) {
-    const latest = plans.slice().sort((a, b) => (b.created || 0) - (a.created || 0))[0];
-    if (latest) { applyPlanToToday(latest); renderSports(); return; }
-  }
-  const planOpts = plans.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}（${p.items.map((i) => i.name).join('、')}）</option>`).join('');
-  body.innerHTML = `
-    <div class="card"><h3>🏃 今日训练打卡（${day}）</h3>
-      <p class="muted" style="margin:0 0 10px">个人节奏：偏好 <b>${escapeHtml(goal.prefTime || '—')}</b>${goal.note ? ' · ' + escapeHtml(goal.note) : ''}。完成训练后自动累计今日运动消耗。</p>
-      <div class="row" style="margin-bottom:10px">
-        ${plans.length ? `<select id="sp_plan" class="modal-input" style="max-width:260px">${planOpts}</select><button class="btn-primary" id="sp_apply">⚡ 一键套用模板</button>` : '<span class="muted">还没有计划，先去「运动计划」创建</span>'}
-        <button class="btn-ghost" id="sp_goal">⚙️ 个人节奏</button>
-      </div>
-      <div id="sp_items"></div>
-      <div class="hero-stat" style="margin-top:12px">
-        <div class="sum-box"><div class="muted">今日已消耗</div><div class="v" style="color:var(--green)">${burned} kcal</div></div>
-        <div class="sum-box"><div class="muted">已完成项</div><div class="v">${items.filter((i) => i.done).length}/${items.length}</div></div>
-        <div class="sum-box"><div class="muted">训练项</div><div class="v">${items.length}</div></div>
-      </div>
-    </div>`;
+  const doneCount = items.filter((i) => i.done).length;
   const persist = () => { const r = sportRec(day); r.items = items; save('sport_' + day, r); };
-  const draw = () => {
+
+  let html = `
+  <div class="card"><h3>🏃 今日训练打卡（${day} · ${WD[wd]}）</h3>
+    <p class="muted" style="margin:0 0 10px">个人节奏：偏好 <b>${escapeHtml(goal.prefTime || '—')}</b>${goal.note ? ' · ' + escapeHtml(goal.note) : ''}。下方训练项由你勾选「固定周几」的计划自动生成，完成打勾即可累计消耗。</p>
+    <div id="sp_items"></div>
+    <div class="hero-stat" style="margin-top:12px">
+      <div class="sum-box"><div class="muted">今日已消耗</div><div class="v" style="color:var(--green)">${burned} kcal</div></div>
+      <div class="sum-box"><div class="muted">已完成</div><div class="v">${doneCount}/${items.length}</div></div>
+      <div class="sum-box"><div class="muted">训练项</div><div class="v">${items.length}</div></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn-ghost" id="sp_add_tmp">＋ 临时加一项</button>
+      <button class="btn-ghost" id="sp_goal">⚙️ 个人节奏</button>
+    </div>
+  </div>`;
+
+  html += `<div class="card"><h3>📋 我的运动计划（频率 = 固定周几 + 时长）</h3>
+    <div id="pl_list"></div>
+    <details class="plan-new" id="pl_new_wrap"><summary>➕ 新建 / 编辑计划</summary>
+      <label class="fld">计划名称</label><input id="pl_name" class="modal-input" placeholder="如：每周减脂计划">
+      <label class="fld">固定周几（可多选，决定哪些天自动生成训练）</label>
+      <div class="wd-row" id="pl_days">${WD.map((n, i) => `<span class="wd-chip" data-d="${i}">${n}</span>`).join('')}</div>
+      <label class="fld">快速套用模板</label>
+      <div class="cat-list" id="pl_tpl">${Object.keys(SPORT_TPL).map((k) => `<span class="cat-chip" data-tpl="${k}">${k}</span>`).join('')}</div>
+      <label class="fld">训练项目（名称 + 每次时长分钟）</label>
+      <div id="pl_items"></div>
+      <button class="btn-ghost" id="pl_add_item" style="margin-top:6px">＋ 添加项目</button>
+      <div class="modal-actions"><button class="btn-ghost" id="pl_cancel">清空</button><button class="btn-primary" id="pl_save">保存计划</button></div>
+    </details>
+  </div>`;
+
+  const periodDays = (c) => (c === '日' ? 14 : c === '周' ? 28 : 60);
+  let progHtml = plans.length ? plans.map((p) => {
+    const pd = periodDays(p.cycle); let doneDays = 0;
+    for (let i = 0; i < pd; i++) { const d = fmtDate(addDays(todayStr(), -i)); const r = sportRec(d); if ((r.items || []).some((it) => it.done && it.planId === p.id)) doneDays++; }
+    const pct = Math.min(100, Math.round(doneDays / pd * 100));
+    return `<div class="card"><div class="ic-top"><b>${escapeHtml(p.name)}</b><span class="muted">近 ${pd} 天 完成 ${doneDays} 天</span></div>
+      <div class="progress" style="margin:10px 0 0"><div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div><span>${pct}%</span></div></div>`;
+  }).join('') : '<div class="empty">还没有计划，先在上方创建～</div>';
+
+  const wk = weekKey(new Date()); let sessions = 0, mins = 0, wkburned = 0;
+  for (let i = 0; i < 7; i++) { const d = fmtDate(addDays(todayStr(), -i)); if (weekKey(new Date(d)) !== wk) continue; const r = sportRec(d); (r.items || []).forEach((it) => { if (it.done) { sessions++; mins += Number(it.minutes) || 0; wkburned += Number(it.kcal) || 0; } }); }
+  const lowPlans = plans.filter((p) => { let done = 0; for (let i = 0; i < 7; i++) { const d = fmtDate(addDays(todayStr(), -i)); const r = sportRec(d); if ((r.items || []).some((it) => it.done && it.planId === p.id)) done++; } return done < p.freq; });
+  const tips = [];
+  if (!sessions) tips.push('本周还没有完成训练，挑一个今天能做的低强度项目先动起来～');
+  else if (sessions < 3) tips.push(`本周已完成 ${sessions} 次训练，接近目标但还差一点，明天安排一次吧。`);
+  else tips.push(`本周 ${sessions} 次训练，节奏很稳，保持住！`);
+  if (lowPlans.length) tips.push(`以下计划本周未完成目标次数：${lowPlans.map((p) => p.name).join('、')}，可适当降低频率或换更喜欢的动作。`);
+
+  html += `<div class="page-head"><h3>📈 进度统计</h3></div>${progHtml}
+    <div class="card"><h3>🔁 本周复盘</h3><div class="hero-stat">
+      <div class="sum-box"><div class="muted">训练次数</div><div class="v">${sessions}</div></div>
+      <div class="sum-box"><div class="muted">总时长</div><div class="v">${mins} 分</div></div>
+      <div class="sum-box"><div class="muted">消耗</div><div class="v" style="color:var(--green)">${wkburned} kcal</div></div>
+    </div><div class="an-tips"><b>💡 建议</b><ul>${tips.map((t) => '<li>' + escapeHtml(t) + '</li>').join('')}</ul></div></div>`;
+
+  body.innerHTML = html;
+
+  // —— 今日训练项 ——
+  const drawToday = () => {
     const box = $('#sp_items');
-    if (!items.length) { box.innerHTML = '<div class="empty">今天还没有训练项，点「一键套用模板」或从计划添加～</div>'; return; }
+    if (!items.length) { box.innerHTML = '<div class="empty">今天没有安排训练（计划里勾选的周几会自动生成）。想动一动可点「临时加一项」～</div>'; return; }
     box.innerHTML = items.map((it, idx) => `<div class="ex-row" data-i="${idx}">
       <button class="check ${it.done ? 'on' : ''}" data-act="done">${it.done ? '✓' : ''}</button>
       <div class="ex-main">
         <div class="ex-name">${escapeHtml(it.name)} ${it.kcal ? `<span class="ex-kcal">${it.kcal} kcal</span>` : ''}</div>
         <div class="ex-ctrl">
           <input type="number" min="0" value="${it.minutes || 30}" class="ex-min" data-i="${idx}" title="时长(分钟)"> 分钟
-          <button class="mini-btn" data-act="vid" data-vid="${encodeURIComponent(it.name)}">🎬 指导视频</button>
+          <button class="mini-btn" data-act="vid" data-vid="${encodeURIComponent(it.name)}">🎬 视频</button>
           <button class="mini-btn" data-act="del">删</button>
         </div>
       </div>
     </div>`).join('');
   };
-  draw();
-  if (plans.length) {
-    $('#sp_apply').addEventListener('click', () => {
-      const p = plans.find((x) => x.id === $('#sp_plan').value); if (!p) return;
-      p.items.forEach((it) => items.push({ name: it.name, minutes: it.minutes || 30, kcal: (it.minutes || 30) * 7, done: false, planId: p.id }));
-      persist(); renderSports();
-    });
-  }
+  drawToday();
+
+  // —— 计划列表 ——
+  const drawPlans = () => {
+    $('#pl_list').innerHTML = plans.length ? plans.map((p) => {
+      const days = (p.days && p.days.length) ? p.days.map((d) => WD[d]).join('、') : '每天';
+      return `<div class="item-card"><div class="ic-top"><span class="ic-title">${escapeHtml(p.name)}</span>
+        <span><button class="mini-btn" data-edit="${p.id}">编辑</button><button class="ic-del" data-pd="${p.id}">×</button></span></div>
+        <div class="ic-body">固定：${days} ｜ ${p.items.map((i) => i.name + ' ' + i.minutes + '分').join('、')}</div></div>`;
+    }).join('') : '<div class="empty">还没有长期计划</div>';
+  };
+  drawPlans();
+
+  // —— 新建/编辑表单状态 ——
+  let editingId = null;
+  let plDays = [];
+  let plItems = [];
+  const drawPlDays = () => { document.querySelectorAll('#pl_days .wd-chip').forEach((c) => c.classList.toggle('on', plDays.includes(Number(c.dataset.d)))); };
+  const drawPlItems = () => {
+    $('#pl_items').innerHTML = plItems.map((it, i) => `<div class="row" style="margin-bottom:6px"><input class="pl-iname" value="${escapeHtml(it.name)}" placeholder="项目名" style="flex:1"><input class="pl-imin" type="number" min="0" value="${it.minutes}" placeholder="分钟" style="width:90px"><button class="mini-btn" data-di="${i}">×</button></div>`).join('') || '<span class="muted">还没有项目</span>';
+    $('#pl_items').querySelectorAll('[data-di]').forEach((b) => b.addEventListener('click', () => { plItems.splice(Number(b.dataset.di), 1); drawPlItems(); }));
+  };
+  drawPlItems();
+  $('#pl_days').querySelectorAll('.wd-chip').forEach((c) => c.addEventListener('click', () => { const d = Number(c.dataset.d); plDays = plDays.includes(d) ? plDays.filter((x) => x !== d) : plDays.concat(d); drawPlDays(); }));
+  $('#pl_add_item').addEventListener('click', () => { plItems.push({ name: '', minutes: 30 }); drawPlItems(); });
+  body.querySelectorAll('[data-tpl]').forEach((c) => c.addEventListener('click', () => {
+    plItems = (SPORT_TPL[c.dataset.tpl] || []).map((n) => ({ name: n, minutes: 30 })); drawPlItems();
+    $('#pl_name').value = $('#pl_name').value || (c.dataset.tpl + '计划');
+  }));
+  $('#pl_list').querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => {
+    const p = load('sport_plans', []).find((x) => x.id === b.dataset.edit); if (!p) return;
+    editingId = p.id; $('#pl_name').value = p.name; plDays = p.days || []; plItems = (p.items || []).map((it) => ({ name: it.name, minutes: it.minutes || 30 }));
+    drawPlDays(); drawPlItems(); const w = $('#pl_new_wrap'); w.open = true; w.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }));
+  $('#pl_list').querySelectorAll('[data-pd]').forEach((b) => b.addEventListener('click', () => { save('sport_plans', load('sport_plans', []).filter((x) => x.id !== b.dataset.pd)); renderSports(); }));
+  $('#pl_cancel').addEventListener('click', () => { editingId = null; $('#pl_name').value = ''; plDays = []; plItems = []; drawPlDays(); drawPlItems(); });
+  $('#pl_save').addEventListener('click', () => {
+    const name = $('#pl_name').value.trim(); if (!name) return flash($('#pl_save'), '填名称');
+    if (!plDays.length) return flash($('#pl_save'), '选周几');
+    plItems = plItems.map((it) => ({ name: (it.name || '').trim(), minutes: Number(it.minutes) || 30 })).filter((it) => it.name);
+    if (!plItems.length) return flash($('#pl_save'), '加项目');
+    const plans2 = load('sport_plans', []);
+    if (editingId) { const p = plans2.find((x) => x.id === editingId); if (p) { p.name = name; p.days = plDays; p.items = plItems; p.cycle = '周'; p.freq = plDays.length; p.updated = Date.now(); } }
+    else plans2.push({ id: uid(), name, cycle: '周', freq: plDays.length, days: plDays, items: plItems, created: Date.now() });
+    save('sport_plans', plans2); editingId = null;
+    ensureTodayItems(); renderSports();
+  });
+
+  // —— 今日项交互 ——
+  const box = $('#sp_items');
+  box.addEventListener('click', (e) => {
+    const row = e.target.closest('.ex-row'); if (!row) return; const idx = Number(row.dataset.i); const act = e.target.dataset.act;
+    if (act === 'done') { items[idx].done = !items[idx].done; if (items[idx].done) items[idx].ts = Date.now(); items[idx].kcal = (Number(items[idx].minutes) || 30) * 7; persist(); renderSports(); }
+    else if (act === 'vid') { window.open(EX_VIDEO[decodeURIComponent(e.target.dataset.vid)] || ('https://search.bilibili.com/all?keyword=' + encodeURIComponent(e.target.dataset.vid)), '_blank'); }
+    else if (act === 'del') { items.splice(idx, 1); if (!items.length) save('sport_cleared_' + day, true); persist(); renderSports(); }
+  });
+  box.addEventListener('input', (e) => { if (e.target.classList.contains('ex-min')) { const idx = Number(e.target.dataset.i); items[idx].minutes = Number(e.target.value) || 0; items[idx].kcal = items[idx].minutes * 7; persist(); } });
+  $('#sp_add_tmp').addEventListener('click', () => {
+    openModal(`<div class="modal-h">➕ 临时加一项（仅今天）</div>
+      <label class="fld">运动名称</label><input id="tm_name" class="modal-input" placeholder="如：散步">
+      <label class="fld">时长（分钟）</label><input id="tm_min" type="number" min="0" value="30" class="modal-input">
+      <div class="modal-actions"><button class="btn-ghost" id="tm_c">取消</button><button class="btn-primary" id="tm_s">添加</button></div>`);
+    $('#tm_s').addEventListener('click', () => { const n = $('#tm_name').value.trim(); if (!n) return flash($('#tm_s'), '填名称'); const m = Number($('#tm_min').value) || 30; items.push({ name: n, minutes: m, kcal: m * 7, done: false, planId: '' }); persist(); closeModal(); renderSports(); });
+    $('#tm_c').addEventListener('click', closeModal);
+  });
   $('#sp_goal').addEventListener('click', () => {
     openModal(`<div class="modal-h">⚙️ 个人运动节奏</div>
       <label class="fld">偏好时间</label><select id="sg_t" class="modal-input"><option ${goal.prefTime === '清晨' ? 'selected' : ''}>清晨</option><option ${goal.prefTime === '上午' ? 'selected' : ''}>上午</option><option ${goal.prefTime === '下午' ? 'selected' : ''}>下午</option><option ${goal.prefTime === '晚上' ? 'selected' : ''}>晚上</option><option ${goal.prefTime === '碎片时间' ? 'selected' : ''}>碎片时间</option></select>
@@ -1754,94 +1853,8 @@ function renderSportCheckin(body) {
     $('#sg_s').addEventListener('click', () => { save('sport_goal', { prefTime: $('#sg_t').value, note: $('#sg_n').value.trim() }); closeModal(); renderSports(); });
     $('#sg_c').addEventListener('click', closeModal);
   });
-  const box = $('#sp_items');
-  box.addEventListener('click', (e) => {
-    const row = e.target.closest('.ex-row'); if (!row) return; const idx = Number(row.dataset.i);
-    const act = e.target.dataset.act;
-    if (act === 'done') { items[idx].done = !items[idx].done; if (items[idx].done) items[idx].ts = Date.now(); items[idx].kcal = (Number(items[idx].minutes) || 30) * 7; persist(); renderSports(); }
-    else if (act === 'vid') { window.open(EX_VIDEO[decodeURIComponent(e.target.dataset.vid)] || ('https://search.bilibili.com/all?keyword=' + encodeURIComponent(e.target.dataset.vid)), '_blank'); }
-    else if (act === 'del') { items.splice(idx, 1); if (!items.length) save('sport_cleared_' + day, true); persist(); renderSports(); }
-  });
-  box.addEventListener('input', (e) => {
-    if (e.target.classList.contains('ex-min')) { const idx = Number(e.target.dataset.i); items[idx].minutes = Number(e.target.value) || 0; items[idx].kcal = items[idx].minutes * 7; persist(); }
-  });
 }
-function renderSportPlan(body) {
-  const plans = load('sport_plans', []);
-  body.innerHTML = `
-    <div class="card"><h3>➕ 新建长期运动计划</h3>
-      <label class="fld">计划名称</label><input id="pl_name" class="modal-input" placeholder="如：12月减脂计划">
-      <div class="grid-2"><div><label class="fld">周期</label><select id="pl_cycle" class="modal-input"><option>日</option><option>周</option><option>月</option></select></div>
-      <div><label class="fld">频率（每周期几次）</label><input id="pl_freq" type="number" min="1" value="3" class="modal-input"></div></div>
-      <label class="fld">快速套用模板</label>
-      <div class="cat-list" id="pl_tpl">${Object.keys(SPORT_TPL).map((k) => `<span class="cat-chip" data-tpl="${k}">${k}</span>`).join('')}</div>
-      <label class="fld">训练项目（名称 + 时长分钟）</label>
-      <div id="pl_items"></div>
-      <button class="btn-ghost" id="pl_add_item" style="margin-top:6px">＋ 添加项目</button>
-      <div class="modal-actions"><button class="btn-primary" id="pl_save">保存计划</button></div>
-    </div>
-    <div id="pl_list"></div>`;
-  let plItems = [];
-  const drawItems = () => {
-    $('#pl_items').innerHTML = plItems.map((it, i) => `<div class="row" style="margin-bottom:6px"><input class="pl-iname" value="${escapeHtml(it.name)}" placeholder="项目名" style="flex:1"><input class="pl-imin" type="number" min="0" value="${it.minutes}" placeholder="分钟" style="width:90px"><button class="mini-btn" data-di="${i}">×</button></div>`).join('') || '<span class="muted">还没有项目</span>';
-    $('#pl_items').querySelectorAll('[data-di]').forEach((b) => b.addEventListener('click', () => { plItems.splice(Number(b.dataset.di), 1); drawItems(); }));
-  };
-  drawItems();
-  $('#pl_add_item').addEventListener('click', () => { plItems.push({ name: '', minutes: 30 }); drawItems(); });
-  body.querySelectorAll('[data-tpl]').forEach((c) => c.addEventListener('click', () => {
-    plItems = (SPORT_TPL[c.dataset.tpl] || []).map((n) => ({ name: n, minutes: 30 })); drawItems();
-    $('#pl_name').value = $('#pl_name').value || (c.dataset.tpl + '计划');
-  }));
-  $('#pl_save').addEventListener('click', () => {
-    const name = $('#pl_name').value.trim(); if (!name) return flash($('#pl_save'), '填名称');
-    plItems = plItems.map((it) => ({ name: (it.name || '').trim(), minutes: Number(it.minutes) || 30 })).filter((it) => it.name);
-    if (!plItems.length) return flash($('#pl_save'), '加项目');
-    const plans2 = load('sport_plans', []);
-    const newPlan = { id: uid(), name, cycle: $('#pl_cycle').value, freq: Number($('#pl_freq').value) || 1, items: plItems, created: Date.now() };
-    plans2.push(newPlan); save('sport_plans', plans2);
-    applyPlanToToday(newPlan);   // 创建后自动把训练项生成到今天的打卡
-    renderSports();
-  });
-  $('#pl_list').innerHTML = plans.length ? plans.map((p) => `<div class="item-card"><div class="ic-top"><span class="ic-title">${escapeHtml(p.name)}</span><button class="ic-del" data-pd="${p.id}">×</button></div><div class="ic-body">周期：${p.cycle} ｜ 频率：每${p.cycle}${p.freq}次 ｜ 项目：${p.items.map((i) => i.name + ' ' + i.minutes + '分').join('、')}</div></div>`).join('') : '<div class="empty">还没有长期计划</div>';
-  $('#pl_list').querySelectorAll('[data-pd]').forEach((b) => b.addEventListener('click', () => { save('sport_plans', load('sport_plans', []).filter((x) => x.id !== b.dataset.pd)); renderSports(); }));
-}
-function renderSportProgress(body) {
-  const plans = load('sport_plans', []);
-  const periodDays = (c) => (c === '日' ? 14 : c === '周' ? 28 : 60);
-  let html = '';
-  if (!plans.length) html = '<div class="empty">还没有计划，先去「运动计划」创建</div>';
-  else {
-    html = plans.map((p) => {
-      const pd = periodDays(p.cycle);
-      let doneDays = 0;
-      for (let i = 0; i < pd; i++) { const d = fmtDate(addDays(todayStr(), -i)); const r = sportRec(d); if ((r.items || []).some((it) => it.done && it.planId === p.id)) doneDays++; }
-      const pct = Math.min(100, Math.round(doneDays / pd * 100));
-      return `<div class="card"><div class="ic-top"><b>${escapeHtml(p.name)}</b><span class="muted">近 ${pd} 天 完成 ${doneDays} 天</span></div>
-        <div class="progress" style="margin:10px 0 0"><div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div><span>${pct}%</span></div></div>`;
-    }).join('');
-  }
-  body.innerHTML = `<div class="page-head"><h3>📈 计划完成进度</h3></div>${html}`;
-}
-function renderSportReview(body) {
-  const wk = weekKey(new Date());
-  let sessions = 0, mins = 0, burned = 0;
-  for (let i = 0; i < 7; i++) { const d = fmtDate(addDays(todayStr(), -i)); if (weekKey(new Date(d)) !== wk) continue; const r = sportRec(d); (r.items || []).forEach((it) => { if (it.done) { sessions++; mins += Number(it.minutes) || 0; burned += Number(it.kcal) || 0; } }); }
-  const plans = load('sport_plans', []);
-  const lowPlans = plans.filter((p) => { let done = 0; for (let i = 0; i < 7; i++) { const d = fmtDate(addDays(todayStr(), -i)); const r = sportRec(d); if ((r.items || []).some((it) => it.done && it.planId === p.id)) done++; } return done < p.freq; });
-  const tips = [];
-  if (!sessions) tips.push('本周还没有完成训练，挑一个今天能做的低强度项目先动起来～');
-  else if (sessions < 3) tips.push(`本周已完成 ${sessions} 次训练，接近目标但还差一点，明天安排一次吧。`);
-  else tips.push(`本周 ${sessions} 次训练，节奏很稳，保持住！`);
-  if (lowPlans.length) tips.push(`以下计划本周未完成目标次数：${lowPlans.map((p) => p.name).join('、')}，可适当降低频率或换更喜欢的动作。`);
-  body.innerHTML = `<div class="card"><h3>🔁 阶段性运动复盘（本周）</h3>
-    <div class="hero-stat">
-      <div class="sum-box"><div class="muted">训练次数</div><div class="v">${sessions}</div></div>
-      <div class="sum-box"><div class="muted">总时长</div><div class="v">${mins} 分</div></div>
-      <div class="sum-box"><div class="muted">消耗</div><div class="v" style="color:var(--green)">${burned} kcal</div></div>
-    </div>
-    <div class="an-tips"><b>💡 建议</b><ul>${tips.map((t) => '<li>' + escapeHtml(t) + '</li>').join('')}</ul></div>
-  </div>`;
-}
+/* (进度统计 / 本周复盘 已合并进 renderSportPlan) */
 function renderSportMeal(body) {
   const day = todayStr();
   const rec = sportRec(day);
