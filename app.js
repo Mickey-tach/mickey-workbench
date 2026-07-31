@@ -1811,33 +1811,42 @@ const NEWS_SOURCES = [
   { key: 'weibo', label: '微博', icon: '🔥' },
   { key: 'finance', label: '财经', icon: '📈' },
 ];
-// 每个分类尝试多个真实热榜接口，依次兜底（最后一个为经 CORS 代理的真实财经源）
+// 实时热榜数据源：首选 DailyHotApi(imsyy，自带 CORS) → vvhan 兜底；每个源失败再经 allorigins 代理取一次
+const PROXY = 'https://api.allorigins.win/raw?url=';
 const NEWS_PROVIDERS = {
   zhihu: [
-    'https://api.codelife.cc/api/top/list?id=zhihu',
-    'https://api.oioweb.cn/api/common/HotList?type=zhihu',
+    { url: 'https://api-hot.imsyy.top/zhihu', name: '知乎热榜' },
+    { url: 'https://api.vvhan.com/api/hotlist/zhihu', name: 'vvhan' },
   ],
   douyin: [
-    'https://api.codelife.cc/api/top/list?id=douyin',
-    'https://api.oioweb.cn/api/common/HotList?type=douyin',
+    { url: 'https://api-hot.imsyy.top/douyin', name: '抖音热榜' },
+    { url: 'https://api.vvhan.com/api/hotlist/douyin', name: 'vvhan' },
   ],
   weibo: [
-    'https://api.codelife.cc/api/top/list?id=weibo',
-    'https://api.oioweb.cn/api/common/HotList?type=weibo',
+    { url: 'https://api-hot.imsyy.top/weibo', name: '微博热搜' },
+    { url: 'https://api.vvhan.com/api/hotlist/weibo', name: 'vvhan' },
   ],
   finance: [
-    'https://api.codelife.cc/api/top/list?id=wallstreet',
-    'https://api.oioweb.cn/api/common/HotList?type=finance',
-    'https://api.allorigins.win/raw?url=' + encodeURIComponent('https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2509&num=15&page=1'),
+    { url: PROXY + encodeURIComponent('https://feed.mix.sina.com.cn/api/roll/get?pageid=153&lid=2509&num=15&page=1'), proxy: true, name: '新浪财经' },
   ],
 };
 function extractNews(j) {
-  let arr = null;
-  if (Array.isArray(j)) arr = j;
+  const cands = [];
+  if (Array.isArray(j)) cands.push(j);
   else if (j && typeof j === 'object') {
-    arr = j.data || j.list || j.rows || (j.result && j.result.data) || (j.data && j.data.list) || null;
+    ['data', 'list', 'rows', 'items'].forEach((k) => {
+      const v = j[k];
+      if (Array.isArray(v)) cands.push(v);
+      else if (v && typeof v === 'object') {
+        if (Array.isArray(v.data)) cands.push(v.data);
+        else if (Array.isArray(v.list)) cands.push(v.list);
+        else if (Array.isArray(v.items)) cands.push(v.items);
+      }
+    });
+    if (j.result && Array.isArray(j.result.data)) cands.push(j.result.data);
   }
-  if (!Array.isArray(arr) || !arr.length) return [];
+  const arr = cands[0] || [];
+  if (!arr.length) return [];
   return arr.slice(0, 40).map((it) => {
     if (!it || typeof it !== 'object') return null;
     return {
@@ -1847,44 +1856,56 @@ function extractNews(j) {
     };
   }).filter((x) => x && x.title);
 }
-async function fetchOneNews(url) {
-  const ctrl = new AbortController();
-  const to = setTimeout(() => ctrl.abort(), 8000);
-  try {
-    const r = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(to);
-    if (!r.ok) return [];
-    let j; try { j = await r.json(); } catch (e) { return []; }
-    return extractNews(j);
-  } catch (e) { clearTimeout(to); return []; }
+async function fetchOneNews(spec) {
+  const direct = async (u) => {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const r = await fetch(u, { signal: ctrl.signal });
+      clearTimeout(to);
+      if (!r.ok) return [];
+      let j; try { j = await r.json(); } catch (e) { return []; }
+      return extractNews(j);
+    } catch (e) { clearTimeout(to); return []; }
+  };
+  if (spec.proxy) return direct(spec.url);
+  let items = await direct(spec.url);
+  if (items.length) return items;
+  // 直连失败（多为 CORS 或网络），再经 allorigins 代理取一次
+  try { return await direct(PROXY + encodeURIComponent(spec.url)); } catch (e) { return []; }
 }
 function hotNewsCacheKey(tab) { return 'hotnews_' + tab; }
-async function getHotNews(tab) {
+async function getHotNews(tab, force) {
   const ck = hotNewsCacheKey(tab);
   const now = Date.now();
   const cached = load(ck, null);
-  if (cached && cached.ts && now - cached.ts < 10 * 60 * 1000 && cached.items && cached.items.length) {
-    return { items: cached.items, live: cached.live };
+  if (!force && cached && cached.ts && now - cached.ts < 5 * 60 * 1000 && cached.items && cached.items.length) {
+    return { items: cached.items, live: cached.live, fetchedAt: cached.fetchedAt || cached.ts, src: cached.src || '' };
   }
-  const urls = NEWS_PROVIDERS[tab] || [];
-  let items = [];
-  for (const u of urls) { items = await fetchOneNews(u); if (items.length) break; }
+  const specs = NEWS_PROVIDERS[tab] || [];
+  let items = [], src = '';
+  for (const sp of specs) { const r = await fetchOneNews(sp); if (r.length) { items = r; src = sp.name || ''; break; } }
   const live = items.length > 0;
   if (!live) {
     const fbAll = HOT_NEWS.slice();
     items = tab === 'finance' ? fbAll.filter((x) => /经济|财经|金融|股票|黄金|比特|基金/.test(x.cat)) : fbAll;
   }
-  save(ck, { items, live, ts: now });
-  return { items, live };
+  const fa = Date.now();
+  save(ck, { items, live, ts: fa, fetchedAt: fa, src });
+  return { items, live, fetchedAt: fa, src };
 }
-async function renderNewsList() {
+async function renderNewsList(force) {
   const listEl = $('#newsList'); if (!listEl) return;
   const tab = homeState.newsTab || 'zhihu';
   const badge = $('#newsBadge');
+  const subEl = $('#newsSub');
   listEl.innerHTML = '<div class="news-loading">正在获取实时热点…</div>';
   let data;
-  try { data = await getHotNews(tab); } catch (e) { data = { items: HOT_NEWS.slice(), live: false }; }
+  try { data = await getHotNews(tab, force); } catch (e) { data = { items: HOT_NEWS.slice(), live: false, fetchedAt: Date.now(), src: '' }; }
+  const t = data.fetchedAt ? new Date(data.fetchedAt) : new Date();
+  const tsLabel = pad2(t.getHours()) + ':' + pad2(t.getMinutes());
   if (badge) { badge.textContent = data.live ? '实时' : '精选'; badge.className = 'news-badge ' + (data.live ? 'live' : 'curated'); }
+  if (subEl) { subEl.textContent = data.live ? ('实时热榜 · 更新于 ' + tsLabel + ' · 点击标题看原文') : ('实时源暂不可达，显示精选内容 · 更新于 ' + tsLabel); }
   const per = 8;
   const off = homeState.newsOffset[tab] || 0;
   homeState.newsCount[tab] = data.items.length;
@@ -1953,13 +1974,13 @@ async function renderHome() {
       <div class="news-head">
         <h3>📰 今日热点</h3>
         <span class="news-badge curated" id="newsBadge">精选</span>
-        <button class="btn-ghost news-refresh" id="newsRefresh">🔄 换一批</button>
+        <button class="btn-ghost news-refresh" id="newsRefresh">🔄 刷新</button>
       </div>
       <div class="news-tabs" id="newsTabs">
         ${NEWS_SOURCES.map((s) => `<button class="news-tab${s.key === homeState.newsTab ? ' active' : ''}" data-tab="${s.key}">${s.icon} ${s.label}</button>`).join('')}
       </div>
       <div class="news-list" id="newsList"></div>
-      <div class="news-sub muted">实时热榜数据 · 点击标题查看原文</div>
+      <div class="news-sub muted" id="newsSub">实时热榜数据 · 点击标题查看原文</div>
     </div>
 
     <div class="card"><h3>🕒 最近动态</h3>${acts.length ? '<div class="act-list">' + acts.map((a) => `<div class="act"><span class="act-ic">${a.icon}</span><span class="act-tx">${escapeHtml(a.text)}</span>${a.ts ? `<span class="act-time">${fmtTime(a.ts)}</span>` : ''}</div>`).join('') + '</div>' : '<div class="empty">今天还没有动态，去记录点什么吧～</div>'}</div>
@@ -1976,10 +1997,8 @@ async function renderHome() {
 
   $('#quoteRefresh').addEventListener('click', () => { homeState.quoteStart++; const q = $('#homeQuote'); if (q) q.textContent = HOME_QUOTES[homeState.quoteStart % HOME_QUOTES.length]; });
   $('#newsRefresh').addEventListener('click', () => {
-    const tab = homeState.newsTab; const per = 8; const count = homeState.newsCount[tab] || 0;
-    const cur = homeState.newsOffset[tab] || 0;
-    homeState.newsOffset[tab] = count > per ? (cur + per) % count : 0;
-    renderNewsList();
+    homeState.newsOffset[homeState.newsTab] = 0;
+    renderNewsList(true);
   });
   document.querySelectorAll('#newsTabs .news-tab').forEach((b) => {
     b.addEventListener('click', () => {
