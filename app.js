@@ -1678,6 +1678,17 @@ async function estimateMealCals(foodText, imageDataUrl) {
   return estimateMealCalsOffline(foodText);
 }
 function initSports() { renderSports(); }
+/* 把某个计划套用到「今天」的训练打卡（同日同计划去重，避免重复添加） */
+function applyPlanToToday(plan) {
+  if (!plan || !plan.items || !plan.items.length) return;
+  const day = todayStr();
+  const rec = sportRec(day);
+  const items = rec.items || [];
+  if (items.some((it) => it.planId === plan.id)) return;
+  plan.items.forEach((it) => items.push({ name: it.name, minutes: it.minutes || 30, kcal: (it.minutes || 30) * 7, done: false, planId: plan.id }));
+  rec.items = items; save('sport_' + day, rec);
+  save('sport_applied_' + day, plan.id);
+}
 function renderSports() {
   $('#sportTabs').innerHTML = SPORT_TABS.map((t) => `<button class="subtab${t.v === sportState.tab ? ' active' : ''}" data-view="${t.v}">${t.t}</button>`).join('');
   $('#sportTabs').querySelectorAll('.subtab').forEach((b) => b.addEventListener('click', () => { sportState.tab = b.dataset.view; renderSports(); }));
@@ -1691,6 +1702,11 @@ function renderSportCheckin(body) {
   const goal = load('sport_goal', { prefTime: '晚上', note: '' });
   const burned = sportBurn(rec);
   const items = rec.items || [];
+  /* 自动生成：当天尚无训练项、且当天未被手动清空过时，自动套用最新计划（真正的「创建计划后自动生成」） */
+  if (!items.length && !load('sport_cleared_' + day, false)) {
+    const latest = plans.slice().sort((a, b) => (b.created || 0) - (a.created || 0))[0];
+    if (latest) { applyPlanToToday(latest); renderSports(); return; }
+  }
   const planOpts = plans.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}（${p.items.map((i) => i.name).join('、')}）</option>`).join('');
   body.innerHTML = `
     <div class="card"><h3>🏃 今日训练打卡（${day}）</h3>
@@ -1744,7 +1760,7 @@ function renderSportCheckin(body) {
     const act = e.target.dataset.act;
     if (act === 'done') { items[idx].done = !items[idx].done; if (items[idx].done) items[idx].ts = Date.now(); items[idx].kcal = (Number(items[idx].minutes) || 30) * 7; persist(); renderSports(); }
     else if (act === 'vid') { window.open(EX_VIDEO[decodeURIComponent(e.target.dataset.vid)] || ('https://search.bilibili.com/all?keyword=' + encodeURIComponent(e.target.dataset.vid)), '_blank'); }
-    else if (act === 'del') { items.splice(idx, 1); persist(); renderSports(); }
+    else if (act === 'del') { items.splice(idx, 1); if (!items.length) save('sport_cleared_' + day, true); persist(); renderSports(); }
   });
   box.addEventListener('input', (e) => {
     if (e.target.classList.contains('ex-min')) { const idx = Number(e.target.dataset.i); items[idx].minutes = Number(e.target.value) || 0; items[idx].kcal = items[idx].minutes * 7; persist(); }
@@ -1781,8 +1797,10 @@ function renderSportPlan(body) {
     plItems = plItems.map((it) => ({ name: (it.name || '').trim(), minutes: Number(it.minutes) || 30 })).filter((it) => it.name);
     if (!plItems.length) return flash($('#pl_save'), '加项目');
     const plans2 = load('sport_plans', []);
-    plans2.push({ id: uid(), name, cycle: $('#pl_cycle').value, freq: Number($('#pl_freq').value) || 1, items: plItems, created: Date.now() });
-    save('sport_plans', plans2); renderSports();
+    const newPlan = { id: uid(), name, cycle: $('#pl_cycle').value, freq: Number($('#pl_freq').value) || 1, items: plItems, created: Date.now() };
+    plans2.push(newPlan); save('sport_plans', plans2);
+    applyPlanToToday(newPlan);   // 创建后自动把训练项生成到今天的打卡
+    renderSports();
   });
   $('#pl_list').innerHTML = plans.length ? plans.map((p) => `<div class="item-card"><div class="ic-top"><span class="ic-title">${escapeHtml(p.name)}</span><button class="ic-del" data-pd="${p.id}">×</button></div><div class="ic-body">周期：${p.cycle} ｜ 频率：每${p.cycle}${p.freq}次 ｜ 项目：${p.items.map((i) => i.name + ' ' + i.minutes + '分').join('、')}</div></div>`).join('') : '<div class="empty">还没有长期计划</div>';
   $('#pl_list').querySelectorAll('[data-pd]').forEach((b) => b.addEventListener('click', () => { save('sport_plans', load('sport_plans', []).filter((x) => x.id !== b.dataset.pd)); renderSports(); }));
