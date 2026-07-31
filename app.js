@@ -1449,9 +1449,9 @@ function renderLedger() {
   const budget = load('budget_' + ym, '');
   const assets = load('assets', { banks: [], wechat: 0, alipay: 0 });
 
-  // —— 今日速记：自动汇总当日总开销 ——
-  const today = todayStr();
-  const tTx = dayTx(today);
+  // —— 选中日期速记：可补记往日 ——
+  const day = ledgerState.day;
+  const tTx = dayTx(day);
   const tInc = tTx.filter((t) => t.type === 'income').reduce((s, t) => s + Number(t.amount), 0);
   const tExp = tTx.filter((t) => t.type === 'expense').reduce((s, t) => s + Number(t.amount), 0);
 
@@ -1468,13 +1468,18 @@ function renderLedger() {
   const body = $('#ledgerBody');
   body.innerHTML = `
     <div class="ledger-today">
-      <div class="lt-head"><div class="lt-date">📅 ${today}</div>
+      <div class="lt-head"><div class="lt-date" id="lg_date_label">📅 ${dayLabel(ledgerState.day)}</div>
         <div class="lt-toggle"><button class="lt-mode ${ledgerState.mode === 'expense' ? 'on' : ''}" data-mode="expense">支出</button><button class="lt-mode ${ledgerState.mode === 'income' ? 'on' : ''}" data-mode="income">收入</button></div>
       </div>
+      <div class="lt-datepick">
+        <label class="ldp-label">记账日期</label>
+        <input type="date" id="lg_date" class="ldp-input" value="${ledgerState.day}" max="${todayStr()}">
+        <span class="ldp-hint muted">忘记可补记往日</span>
+      </div>
       <div class="lt-sum">
-        <div class="lt-box"><span class="muted">今日支出</span><b style="color:var(--red)">${money(tExp)}</b></div>
-        <div class="lt-box"><span class="muted">今日收入</span><b style="color:var(--green)">${money(tInc)}</b></div>
-        <div class="lt-box"><span class="muted">今日结余</span><b style="color:${tInc - tExp >= 0 ? 'var(--green)' : 'var(--red)'}">${money(tInc - tExp)}</b></div>
+        <div class="lt-box"><span class="muted">支出</span><b id="lg_sum_exp" style="color:var(--red)">${money(tExp)}</b></div>
+        <div class="lt-box"><span class="muted">收入</span><b id="lg_sum_inc" style="color:var(--green)">${money(tInc)}</b></div>
+        <div class="lt-box"><span class="muted">结余</span><b id="lg_sum_net" style="color:${tInc - tExp >= 0 ? 'var(--green)' : 'var(--red)'}">${money(tInc - tExp)}</b></div>
       </div>
       <div class="lt-entry">
         <input id="lg_item" class="modal-input" placeholder="${ledgerState.mode === 'expense' ? '消费项目，如 午餐/打车' : '收入来源，如 工资/兼职'}">
@@ -1490,7 +1495,7 @@ function renderLedger() {
 
     <div class="card" style="margin-top:16px"><h3>📊 本月消费统计</h3>
       <div class="ledger-monthhead"><span>共支出 <b style="color:var(--red)">${money(expense)}</b></span><span>共收入 <b style="color:var(--green)">${money(income)}</b></span><span>结余 <b style="color:${income - expense >= 0 ? 'var(--green)' : 'var(--red)'}">${money(income - expense)}</b></span></div>
-      ${catArr.length ? `<div class="cat-bar">${catArr.map(([c, v]) => `<div class="cat-row"><span class="cat-name">${escapeHtml(c)}</span><div class="cat-track"><div class="cat-fill" style="width:${Math.max(6, (v / maxCat) * 100)}%"></div></div><span class="cat-val">${money(v)}</span></div>`).join('')}</div>` : '<div class="empty">本月暂无支出记录</div>'}
+      ${ledgerDonut(catArr)}
     </div>
 
     <div class="card" style="margin-top:16px">
@@ -1530,10 +1535,12 @@ function renderLedger() {
     const amt = parseFloat($('#lg_amt').value); if (!amt) { flash($('#lg_add'), '请填金额'); return; }
     const item = $('#lg_item').value.trim();
     const cat = ledgerState.mode === 'expense' ? ledgerState.selCat : '收入';
-    txs().unshift({ id: uid(), type: ledgerState.mode, date: today, amount: amt, category: cat, note: item });
-    save('tx', load('tx', [])); renderLedger();
+    const list = txs();
+    list.unshift({ id: uid(), type: ledgerState.mode, date: ledgerState.day, amount: amt, category: cat, note: item });
+    save('tx', list); renderLedger();
     if (activeSection === 'home') renderHome();
   });
+  const lgDate = $('#lg_date'); if (lgDate) lgDate.addEventListener('change', () => { ledgerState.day = lgDate.value || todayStr(); renderDayPanel(); });
   body.querySelectorAll('#lg_today_list [data-dt]').forEach((b) => b.addEventListener('click', () => { save('tx', load('tx', []).filter((x) => x.id !== b.dataset.dt)); renderLedger(); }));
   $('#lg_month').addEventListener('change', (e) => { ledgerState.month = e.target.value; renderLedger(); });
   $('#lg_more_head').addEventListener('click', () => { ledgerState.more = !ledgerState.more; renderLedger(); });
@@ -1545,15 +1552,52 @@ function renderLedger() {
     assets.wechat = $('#lg_wx').value; assets.alipay = $('#lg_ali').value; save('assets', assets); flash($('#lg_asset_save'), '已保存'); renderLedger();
   });
   body.querySelectorAll('#lg_hist [data-dt]').forEach((b) => b.addEventListener('click', () => { save('tx', load('tx', []).filter((x) => x.id !== b.dataset.dt)); renderLedger(); }));
-  renderTodayList();
+  renderDayPanel();
 }
-function renderTodayList() {
+function dayLabel(d) {
+  if (d === todayStr()) return '今天';
+  const y = new Date(); y.setDate(y.getDate() - 1);
+  if (d === fmtDate(y)) return '昨天';
+  return d;
+}
+function renderDayPanel() {
+  const day = ledgerState.day;
+  const lbl = $('#lg_date_label'); if (lbl) lbl.textContent = '📅 ' + dayLabel(day);
+  const arr = dayTx(day).slice().sort((a, b) => (b.id || '').localeCompare(a.id || ''));
+  const di = arr.filter((t) => t.type === 'income').reduce((s, t) => s + Number(t.amount), 0);
+  const de = arr.filter((t) => t.type === 'expense').reduce((s, t) => s + Number(t.amount), 0);
+  const exp = $('#lg_sum_exp'); if (exp) exp.textContent = money(de);
+  const inc = $('#lg_sum_inc'); if (inc) inc.textContent = money(di);
+  const net = $('#lg_sum_net'); if (net) { net.textContent = money(di - de); net.style.color = di - de >= 0 ? 'var(--green)' : 'var(--red)'; }
   const box = $('#lg_today_list'); if (!box) return;
-  const arr = dayTx(todayStr()).slice().sort((a, b) => (b.id || '').localeCompare(a.id || ''));
-  if (!arr.length) { box.innerHTML = '<div class="muted" style="font-size:12px;text-align:center;padding:8px 0">今天还没记账，记下第一笔吧～</div>'; return; }
+  if (!arr.length) { box.innerHTML = `<div class="muted" style="font-size:12px;text-align:center;padding:8px 0">${dayLabel(day)}还没记账，记下第一笔吧～</div>`; return; }
   box.innerHTML = arr.map((t) => `<div class="item-card"><div class="ic-top"><span class="ic-title"><span class="tag">${escapeHtml(t.category || (t.type === 'income' ? '收入' : '其他'))}</span>${escapeHtml(t.note || '')}</span><span class="ic-date"><button class="ic-del" data-dt="${t.id}">×</button></span></div><div class="ic-body" style="color:${t.type === 'income' ? 'var(--green)' : 'var(--red)'};font-weight:700">${t.type === 'income' ? '+' : '-'}${money(t.amount)}</div></div>`).join('');
+  box.querySelectorAll('[data-dt]').forEach((b) => b.addEventListener('click', () => { save('tx', load('tx', []).filter((x) => x.id !== b.dataset.dt)); renderLedger(); }));
 }
 function netTotal(a) { return (a.banks || []).reduce((s, b) => s + Number(b.amount), 0) + Number(a.wechat || 0) + Number(a.alipay || 0); }
+// 本月支出分类甜甜圈饼图（纯 SVG，无外部依赖）
+const DONUT_COLORS = ['#5B9BE8', '#7ED0C0', '#F4B183', '#B6A6E9', '#F6A6C1', '#86C98B', '#FFD17A', '#E08B8B', '#8FB9FF', '#C9B6E4', '#F2C14E', '#9CC8F8'];
+function ledgerDonut(catArr) {
+  if (!catArr.length) return '<div class="empty">本月暂无支出记录</div>';
+  const total = catArr.reduce((s, [, v]) => s + Number(v), 0) || 1;
+  const R = 54, C = 2 * Math.PI * R;
+  let off = 0;
+  const segs = catArr.map(([c, v], i) => {
+    const len = (Number(v) / total) * C;
+    const color = DONUT_COLORS[i % DONUT_COLORS.length];
+    const s = `<circle cx="70" cy="70" r="${R}" fill="none" stroke="${color}" stroke-width="20" stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 70 70)"></circle>`;
+    off += len;
+    return s;
+  }).join('');
+  const legend = catArr.map(([c, v], i) => `<div class="dn-leg"><span class="dn-dot" style="background:${DONUT_COLORS[i % DONUT_COLORS.length]}"></span><span class="dn-name">${escapeHtml(c)}</span><span class="dn-val">${money(v)}</span><span class="dn-pct">${((Number(v) / total) * 100).toFixed(1)}%</span></div>`).join('');
+  return `<div class="donut-wrap">
+    <div class="donut-box"><svg viewBox="0 0 140 140" class="donut-svg">
+      <circle cx="70" cy="70" r="${R}" fill="none" stroke="var(--soft)" stroke-width="20"></circle>
+      ${segs}
+    </svg><div class="donut-center"><b>${money(total)}</b><span class="muted">总支出</span></div></div>
+    <div class="donut-legend">${legend}</div>
+  </div>`;
+}
 
 /* ===================== 6. 运动（原健康升级） ===================== */
 const SPORT_TABS = [
