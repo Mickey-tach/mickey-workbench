@@ -1004,6 +1004,26 @@ function migrateMaterialCodes() {
   if (changed) save('materials', list);
   save('codes_migrated', true);
 }
+/* 整理编号：保留已有的、不重复的有效编号；把空编号 / 重复编号按分类重新续成 A001/A002…（不改动成品档案里按 id 的关联） */
+function renumberMaterials() {
+  const list = load('materials', []);
+  if (!list.length) return false;
+  const used = {};
+  let changed = false;
+  const sorted = list.slice().sort(matCodeSort);
+  for (const m of sorted) {
+    const mt = (m.code || '').match(/^([A-Z])(\d+)$/);
+    if (mt && !used[m.code]) { used[m.code] = true; continue; }   // 已有且唯一的编号，保留
+    const code = MAT_CAT_CODE[m.cat] || 'X';
+    let n = 1;
+    while (used[code + String(n).padStart(3, '0')]) n++;
+    m.code = code + String(n).padStart(3, '0');
+    used[m.code] = true;
+    changed = true;
+  }
+  if (changed) { save('materials', list); renderTailor(); }
+  return changed;
+}
 /* 旧数据迁移：把 localStorage 里遗留的 base64 图片挪进 IndexedDB（仅执行一次） */
 async function migrateImages() {
   if (load('imgs_migrated', false)) return;
@@ -1103,13 +1123,14 @@ async function doImportMaterials(text, imgMap) {
       const imgVal = get(row, '图片');
       if (imgVal) { if (/^(https?:|data:)/i.test(imgVal)) photo = imgVal; else if (imgMap[imgVal]) photo = imgMap[imgVal]; }
       if (photo) imgUsed++;
-      newItems.push({ id: uid(), code, cat, name: get(row, '品名'), spec: get(row, '材质/规格/颜色'), sup: get(row, '供应渠道'), unit: get(row, '单位'), pdate: get(row, '采购时间(YYYY-MM-DD)'), qty, total: total.toFixed(2), unitPrice: unitPrice.toFixed(2), safety: parseFloat(get(row, '安全库存')) || 0, note: get(row, '采购备注'), photo });
+      const item = { id: uid(), code, cat, name: get(row, '品名'), spec: get(row, '材质/规格/颜色'), sup: get(row, '供应渠道'), unit: get(row, '单位'), pdate: get(row, '采购时间(YYYY-MM-DD)'), qty, total: total.toFixed(2), unitPrice: unitPrice.toFixed(2), safety: parseFloat(get(row, '安全库存')) || 0, note: get(row, '采购备注'), photo };
+      newItems.push(item);
+      list.unshift(item);   // 立即并入，使同一批次后续行能接着自动编号（避免出现重复的 001）
       added++;
     });
     if (!added) throw new Error('没有有效行（需含「采购分类」列）');
     /* 本地图片（data:）存入 IndexedDB，避免膨胀 localStorage */
     for (const m of newItems) { if (m.photo && m.photo.indexOf('data:') === 0) { try { m.photo = await storeImg(m.photo); } catch (e) { m.photo = ''; } } }
-    newItems.forEach((m) => list.unshift(m));
     save('materials', list); renderTailor(); checkStockBanner();
     alert('成功导入 ' + added + ' 条物料' + (imgUsed ? '，其中 ' + imgUsed + ' 张图片已附加 ✅' : ' ✅'));
   } catch (e) { alert('导入失败：' + e.message); }
@@ -1178,6 +1199,7 @@ async function renderMaterialGallery(body) {
   body.innerHTML = costCard + `    <div class="gal-tools">
       <button class="btn-ghost" id="matTpl">⬇️ 下载模板</button>
       <button class="btn-ghost" id="matImp">⬆️ 批量导入</button>
+      <button class="btn-ghost" id="matRenumber">🔢 整理编号</button>
     </div>
     <div class="muted" style="font-size:12px;margin:0 0 12px">💡 批量导入：CSV「图片」列填 <b>图片链接</b> 或 <b>文件名</b>；若填文件名，导入时请在弹窗选择对应图片文件即可自动匹配。</div>
     <button class="fab-plus" id="matAdd" title="新增物料">＋</button>
@@ -1185,6 +1207,11 @@ async function renderMaterialGallery(body) {
   $('#matAdd').addEventListener('click', openMaterialForm);
   $('#matTpl').addEventListener('click', downloadMaterialTemplate);
   $('#matImp').addEventListener('click', importMaterialsFlow);
+  $('#matRenumber').addEventListener('click', () => {
+    if (!confirm('将按分类把空编号 / 重复编号重新续成 A001、B001…（已有的唯一编号会保留）。继续？')) return;
+    const ch = renumberMaterials();
+    flash($('#matRenumber'), ch ? '已整理' : '无需整理');
+  });
   body.querySelectorAll('.mr-edit').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); openMaterialForm(b.dataset.id); }));
   body.querySelectorAll('.mr-del').forEach((b) => b.addEventListener('click', (e) => {
     e.stopPropagation();
