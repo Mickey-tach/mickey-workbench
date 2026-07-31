@@ -1319,14 +1319,11 @@ async function renderProductGallery(body) {
   $('#prodImp').addEventListener('click', () => pickFile('text/csv,.csv', importProductsCSV));
   body.querySelectorAll('[data-prod]').forEach((c) => c.addEventListener('click', () => openProductDetail(c.dataset.prod)));
 }
+let _matSelectOutside = null;
 async function openProductForm(editId) {
   const editS = editId ? load('samples', []).find((x) => x.id === editId) : null;
   const v = (x) => (x == null ? '' : x);
   const mats = load('materials', []);
-  const matOpts = mats.map((m) => {
-    const chk = editS && (editS.materialIds || []).includes(m.id) ? 'checked' : '';
-    return `<label class="row" style="gap:6px"><input type="checkbox" class="mat-chk" value="${m.id}" ${chk} style="width:auto"> ${escapeHtml(m.name || m.code)}</label>`;
-  }).join('') || '<span class="muted">请先在物料图库添加物料</span>';
   const STATUSES = ['还在打样', '成品样品', '已经卖掉', '归档保存'];
   const statusOpts = STATUSES.map((st) => `<option ${editS && editS.status === st ? 'selected' : ''}>${st}</option>`).join('');
   openModal(`<h3>${editS ? '✏️ 修改成品' : '➕ 新增成品'}</h3>
@@ -1334,7 +1331,18 @@ async function openProductForm(editId) {
     <label>分类</label><input id="p_cat" value="${escapeHtml(v(editS && editS.cat))}" placeholder="裙装/上衣/配饰…">
     <label>成品图片（可多张，留空则保留已有）</label><input id="p_photos" type="file" accept="image/*" multiple>
     <div class="thumbs" id="p_thumbs"></div>
-    <label>关联用到的原材料（勾选）</label><div class="grid-2" style="gap:6px">${matOpts}</div>
+    <label>关联用到的原材料（点击下拉，可搜索、多选）</label>
+    <div class="ms" id="p_ms">
+      <div class="ms-ctrl" id="p_ms_ctrl" tabindex="0">
+        <div class="ms-chips" id="p_ms_chips"></div>
+        <span class="ms-arrow">▾</span>
+      </div>
+      <div class="ms-panel" id="p_ms_panel" style="display:none">
+        <input id="p_ms_search" class="ms-search" placeholder="搜索材料名 / 编号…">
+        <div class="ms-list" id="p_ms_list"></div>
+        <div class="ms-foot"><span class="muted" id="p_ms_count"></span><button class="mini-btn" id="p_ms_clear" style="margin-left:auto">清空</button></div>
+      </div>
+    </div>
     <div class="grid-2"><div><label>用料数据</label><input id="p_usage" value="${escapeHtml(v(editS && editS.usage))}" placeholder="如 2米 / 3颗扣"></div><div><label>花费(元)</label><input id="p_cost" type="number" min="0" step="0.01" value="${v(editS && editS.cost)}"></div></div>
     <div class="grid-3"><div><label>工时(小时)</label><input id="p_hours" type="number" min="0" step="0.1" value="${v(editS && editS.hours)}"></div><div><label>人工(元)</label><input id="p_labor" type="number" min="0" step="0.01" value="${v(editS && editS.labor)}"></div><div><label>建议卖价(元)</label><input id="p_price" type="number" min="0" step="0.01" value="${v(editS && editS.price)}"></div></div>
     <label>状态</label><select id="p_status">${statusOpts}</select>
@@ -1342,10 +1350,48 @@ async function openProductForm(editId) {
   let photos = editS ? (editS.photos || []).slice() : [];
   if (editS && photos.length) { const ds = await resolveImgs(photos); ds.forEach((d) => { if (d) { const i = document.createElement('img'); i.src = d; $('#p_thumbs').appendChild(i); } }); }
   $('#p_photos').addEventListener('change', (e) => [...e.target.files].forEach((f) => readImage(f, (d) => { photos.push(d); const i = document.createElement('img'); i.src = d; $('#p_thumbs').appendChild(i); })));
-  $('#p_cancel').addEventListener('click', closeModal);
+  /* —— 关联原材料：可搜索多选下拉 —— */
+  let selMats = editS ? (editS.materialIds || []).filter((id) => mats.some((m) => m.id === id)) : [];
+  const ms = $('#p_ms'), msCtrl = $('#p_ms_ctrl'), msPanel = $('#p_ms_panel'), msSearch = $('#p_ms_search'), msList = $('#p_ms_list'), msChips = $('#p_ms_chips');
+  const renderChips = () => {
+    if (!selMats.length) { msChips.innerHTML = '<span class="ms-ph">点击选择 / 搜索原材料（可多选）</span>'; return; }
+    msChips.innerHTML = selMats.map((id) => { const m = mats.find((x) => x.id === id); return `<span class="ms-chip">${escapeHtml(m ? (m.name || m.code) : id)}<button class="ms-x" data-rm="${id}" type="button">×</button></span>`; }).join('');
+    msChips.querySelectorAll('[data-rm]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); selMats = selMats.filter((x) => x !== b.dataset.rm); renderChips(); renderList(); }));
+  };
+  const renderList = () => {
+    const q = (msSearch.value || '').trim().toLowerCase();
+    const filtered = mats.filter((m) => !q || (m.name || '').toLowerCase().includes(q) || (m.code || '').toLowerCase().includes(q));
+    if (!filtered.length) msList.innerHTML = '<div class="ms-empty">没有匹配的材料</div>';
+    else {
+      msList.innerHTML = filtered.map((m) => { const on = selMats.includes(m.id); return `<div class="ms-item${on ? ' on' : ''}" data-id="${m.id}"><span class="ms-ck">${on ? '✓' : ''}</span><span class="ms-name">${escapeHtml(m.name || m.code)}</span>${m.code ? `<span class="ms-code">${escapeHtml(m.code)}</span>` : ''}</div>`; }).join('');
+      msList.querySelectorAll('.ms-item').forEach((it) => it.addEventListener('click', () => {
+        const id = it.dataset.id;
+        if (selMats.includes(id)) selMats = selMats.filter((x) => x !== id); else selMats.push(id);
+        renderChips(); renderList();
+      }));
+    }
+    const cnt = $('#p_ms_count'); if (cnt) cnt.textContent = `已选 ${selMats.length} / 共 ${mats.length}`;
+  };
+  const closeMs = () => { msPanel.style.display = 'none'; ms.classList.remove('open'); };
+  msCtrl.addEventListener('click', () => {
+    const open = msPanel.style.display === 'none';
+    msPanel.style.display = open ? 'block' : 'none';
+    ms.classList.toggle('open', open);
+    if (open) { msSearch.value = ''; renderList(); setTimeout(() => msSearch.focus(), 10); }
+  });
+  msSearch.addEventListener('click', (e) => e.stopPropagation());
+  msSearch.addEventListener('input', renderList);
+  $('#p_ms_clear').addEventListener('click', (e) => { e.stopPropagation(); selMats = []; renderChips(); renderList(); });
+  if (_matSelectOutside) document.removeEventListener('click', _matSelectOutside);
+  _matSelectOutside = (e) => { if (ms && !ms.contains(e.target)) closeMs(); };
+  document.addEventListener('click', _matSelectOutside);
+  if (!mats.length) msChips.innerHTML = '<span class="ms-ph">请先在物料图库添加物料</span>';
+  else { renderChips(); renderList(); }
+  $('#p_cancel').addEventListener('click', () => { if (_matSelectOutside) { document.removeEventListener('click', _matSelectOutside); _matSelectOutside = null; } closeModal(); });
   $('#p_save').addEventListener('click', async () => {
     const g = (id) => $(id).value.trim();
-    const used = [...document.querySelectorAll('.mat-chk')].filter((c) => c.checked).map((c) => c.value);
+    const used = selMats.slice();
+    if (_matSelectOutside) { document.removeEventListener('click', _matSelectOutside); _matSelectOutside = null; }
     const finalPhotos = await storeImgs(photos); /* 本地图存 IDB，原 id/链接保留 */
     const s = { code: g('#p_code'), name: g('#p_name'), cat: g('#p_cat'), photos: finalPhotos, materialIds: used, usage: g('#p_usage'), cost: g('#p_cost'), hours: g('#p_hours'), labor: g('#p_labor'), price: g('#p_price'), status: $('#p_status').value };
     if (!s.name && !s.code) return flash($('#p_save'), '填名字或编号');

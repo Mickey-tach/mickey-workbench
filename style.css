@@ -713,3 +713,27 @@ tr:last-child td{border-bottom:none}
 .plan-new{margin-top:10px;border:1px dashed var(--line);border-radius:14px;padding:6px 14px;background:var(--soft)}
 .plan-new summary{cursor:pointer;font-weight:600;padding:8px 0;color:var(--accent)}
 .plan-new[open] summary{margin-bottom:8px}
+
+/* 关联原材料：可搜索多选下拉（成品档案） */
+.ms{position:relative;width:100%}
+.ms-ctrl{display:flex;align-items:center;gap:8px;min-height:44px;padding:7px 10px;border:1px solid var(--line);border-radius:12px;background:#F7FBFF;cursor:pointer;transition:.15s}
+.ms-ctrl:focus{border-color:var(--baby);background:#fff;outline:none}
+.ms-chips{display:flex;flex-wrap:wrap;gap:6px;flex:1}
+.ms-ph{color:var(--muted);font-size:14px}
+.ms-arrow{color:var(--muted);font-size:13px;flex:0 0 auto;transition:transform .15s}
+.ms.open .ms-arrow{transform:rotate(180deg)}
+.ms-chip{display:inline-flex;align-items:center;gap:4px;background:var(--soft);color:var(--baby-d);border:1px solid var(--line);border-radius:99px;padding:3px 8px;font-size:13px;font-weight:600}
+.ms-x{border:none;background:transparent;color:var(--baby-d);cursor:pointer;font-size:14px;line-height:1;padding:0 2px}
+.ms-panel{position:absolute;z-index:30;top:calc(100% + 6px);left:0;right:0;background:#fff;border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:10px;max-height:340px;display:flex;flex-direction:column}
+.ms-search{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:10px;font-size:14px;background:#F7FBFF;color:var(--ink);margin-bottom:8px}
+.ms-search:focus{border-color:var(--baby);background:#fff;outline:none}
+.ms-list{overflow-y:auto;flex:1;max-height:230px;display:flex;flex-direction:column;gap:2px}
+.ms-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:10px;cursor:pointer;font-size:14px}
+.ms-item:hover{background:var(--soft)}
+.ms-item.on{background:var(--soft)}
+.ms-ck{width:18px;height:18px;border-radius:6px;border:2px solid var(--baby);display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:800;flex:0 0 auto}
+.ms-item.on .ms-ck{background:var(--baby);border-color:var(--baby)}
+.ms-name{flex:1;color:var(--ink)}
+.ms-code{font-size:12px;color:var(--muted);background:var(--soft);border-radius:8px;padding:1px 7px;font-weight:600}
+.ms-empty{padding:14px;text-align:center;color:var(--muted);font-size:13px}
+.ms-foot{display:flex;align-items:center;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}
